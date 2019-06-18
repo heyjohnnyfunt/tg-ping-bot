@@ -31,29 +31,32 @@ func LoadConfiguration(file string) Config {
 }
 
 // Returns average ping time duration
-func Ping(addr string) string {
+func Ping(addr string) (string, error) {
 
 	pinger, err := ping.NewPinger(addr)
-	pinger.SetPrivileged(true)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
+
+	pinger.SetPrivileged(true)
 	pinger.Count = 3
+	pinger.Timeout = time.Second * 30
 	pinger.Run()                 // blocks until finished
 	stats := pinger.Statistics() // get send/receive/rtt stats
 	fmt.Println(stats)
 
-	return ((stats.MinRtt + stats.MaxRtt) / 2).String()
+	return ((stats.MinRtt + stats.MaxRtt) / 2).String(), nil
 }
 
 func main() {
 
-	reg, err := regexp.Compile("^https?://")
+	httpsReg, err := regexp.Compile("^https?://")
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	config := LoadConfiguration("./config.json")
+
 	bot, err := tgbotapi.NewBotAPI(config.TgKey)
 	if err != nil {
 		log.Panic(err)
@@ -77,16 +80,20 @@ func main() {
 		var answer string
 
 		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-		words := strings.Fields(update.Message.Text)
 
-		if words[0] == "ping" {
+		words := strings.Fields(strings.ToLower(update.Message.Text))
 
+		if words[0] != "ping" {
+			continue
+		}
+
+		go func(bot *tgbotapi.BotAPI) {
 			if len(words) > 1 && len(words[1]) > 0 {
 
 				addr := words[1]
 				log.Printf("%s", addr)
 
-				if !reg.MatchString(addr) {
+				if !httpsReg.MatchString(addr) {
 					addr = "http://" + addr
 				}
 
@@ -97,9 +104,13 @@ func main() {
 				if err1 != nil && err2 == nil {
 					answer = "Give me valid IP or URL, SOAB!"
 				} else {
-					addr = reg.ReplaceAllString(addr, "")
-					pingTime := Ping(addr)
-					answer = fmt.Sprintf("time:%s\npong at:\n%s", pingTime, time.Now().UTC().String())
+					addr = httpsReg.ReplaceAllString(addr, "")
+					pingTime, err := Ping(addr)
+					if err != nil {
+						answer = "You think, I'm fool, SOAB, hah? This domain is bullshit!"
+					} else {
+						answer = fmt.Sprintf("time:%s\npong at:\n%s", pingTime, time.Now().UTC().String())
+					}
 				}
 			} else {
 				answer = fmt.Sprintf("pong at:\n%s", time.Now().UTC().String())
@@ -108,7 +119,11 @@ func main() {
 			msg := tgbotapi.NewMessage(update.Message.Chat.ID, answer)
 			msg.ReplyToMessageID = update.Message.MessageID
 
-			bot.Send(msg)
-		}
+			_, err := bot.Send(msg)
+			if err != nil {
+				log.Printf("Can not send message: %s", err)
+			}
+		}(bot)
+
 	}
 }
